@@ -24,6 +24,7 @@ public struct RestoreModalView: View {
 
                 if !migration.isRunning {
                     Button("Chiudi") {
+                        migration.reset()
                         onDismiss()
                     }
                     .keyboardShortcut(.cancelAction)
@@ -60,12 +61,24 @@ public struct RestoreModalView: View {
                 } else if migration.isSuccess {
                     Spacer()
                     Button("Fatto") {
+                        migration.reset()
                         onDismiss()
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.green)
+                } else if migration.errorDescription != nil {
+                    Button("Chiudi") {
+                        migration.reset()
+                        onDismiss()
+                    }
+                    Spacer()
+                    Button("Riprova") {
+                        migration.reset()
+                    }
+                    .buttonStyle(.borderedProminent)
                 } else {
                     Button("Annulla") {
+                        migration.reset()
                         onDismiss()
                     }
 
@@ -87,7 +100,11 @@ public struct RestoreModalView: View {
         }
         .frame(width: 580, height: 480)
         .onAppear {
+            migration.reset()
             isAntigravityRunning = ProcessService.shared.isAntigravityRunning()
+        }
+        .onDisappear {
+            migration.reset()
         }
     }
 

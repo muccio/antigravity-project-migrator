@@ -33,6 +33,7 @@ public struct MigrationModalView: View {
 
                 if !migration.isRunning {
                     Button("Chiudi") {
+                        migration.reset()
                         onDismiss()
                     }
                     .keyboardShortcut(.cancelAction)
@@ -73,12 +74,24 @@ public struct MigrationModalView: View {
                 } else if migration.isSuccess {
                     Spacer()
                     Button("Fatto") {
+                        migration.reset()
                         onDismiss()
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.green)
+                } else if migration.errorDescription != nil {
+                    Button("Chiudi") {
+                        migration.reset()
+                        onDismiss()
+                    }
+                    Spacer()
+                    Button("Riprova") {
+                        migration.reset()
+                    }
+                    .buttonStyle(.borderedProminent)
                 } else {
                     Button("Annulla") {
+                        migration.reset()
                         onDismiss()
                     }
 
@@ -100,7 +113,11 @@ public struct MigrationModalView: View {
         }
         .frame(width: 650, height: 600)
         .onAppear {
+            migration.reset()
             loadInitialData()
+        }
+        .onDisappear {
+            migration.reset()
         }
     }
 

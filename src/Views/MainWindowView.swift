@@ -35,21 +35,29 @@ public struct MainWindowView: View {
         HSplitView {
             // Left Column: List and Filters
             VStack(spacing: 0) {
+                projectFolderBar
+                Divider()
                 topSearchBar
                 Divider()
                 summaryHeader
                 Divider()
                 projectList
             }
-            .frame(minWidth: 420, idealWidth: 480)
+            .frame(minWidth: 440, idealWidth: 490)
 
             // Right Column: Detail Inspector
             Group {
                 if let project = selectedProject {
                     ProjectDetailView(
                         project: project,
-                        onMigrate: { projectToMigrate = project },
-                        onRestore: { projectToRestore = project },
+                        onMigrate: {
+                            MigrationService.shared.reset()
+                            projectToMigrate = project
+                        },
+                        onRestore: {
+                            MigrationService.shared.reset()
+                            projectToRestore = project
+                        },
                         onCleanCache: { projectToCleanCache = project },
                         onRecalculate: { scanner.refreshProject(atPath: project.path) }
                     )
@@ -64,18 +72,10 @@ public struct MainWindowView: View {
                 Button(action: selectCustomFolder) {
                     Label("Scegli Cartella", systemImage: "folder.badge.gearshape")
                 }
-                .help("Seleziona una cartella diversa da scansionare")
+                .help("Seleziona la cartella dei progetti da scansionare (Cmd+O)")
 
                 Menu {
-                    Button("Cartella WEBDEV") {
-                        scanner.scan(directory: "/Users/mariosalvucci/Documents/Development/WEBDEV")
-                    }
-                    Button("Cartella Development") {
-                        scanner.scan(directory: "/Users/mariosalvucci/Documents/Development")
-                    }
-                    Button("Home Utente (~)") {
-                        scanner.scan(directory: FileManager.default.homeDirectoryForCurrentUser.path)
-                    }
+                    folderQuickOptions
                 } label: {
                     Label("Percorsi Rapidi", systemImage: "clock.arrow.circlepath")
                 }
@@ -83,7 +83,7 @@ public struct MainWindowView: View {
                 Button(action: { scanner.scan(directory: scanner.currentFolder) }) {
                     Label("Ricarica", systemImage: "arrow.clockwise")
                 }
-                .help("Riscansiona la cartella corrente")
+                .help("Riscansiona la cartella corrente (Cmd+R)")
 
                 Button(action: { showBackupsModal = true }) {
                     Label("Backup Chat", systemImage: "shield.checkerboard")
@@ -93,12 +93,14 @@ public struct MainWindowView: View {
         }
         .sheet(item: $projectToMigrate) { project in
             MigrationModalView(project: project) {
+                MigrationService.shared.reset()
                 projectToMigrate = nil
                 updateSelectedProject()
             }
         }
         .sheet(item: $projectToRestore) { project in
             RestoreModalView(project: project) {
+                MigrationService.shared.reset()
                 projectToRestore = nil
                 updateSelectedProject()
             }
@@ -116,10 +118,115 @@ public struct MainWindowView: View {
         }
         .onAppear {
             if scanner.projects.isEmpty {
-                // Default to WEBDEV folder where user develops
-                let initial = "/Users/mariosalvucci/Documents/Development/WEBDEV"
+                let initial = scanner.resolveInitialDirectory()
                 scanner.scan(directory: initial)
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .selectProjectsFolder)) { _ in
+            selectCustomFolder()
+        }
+        .onDrop(of: ["public.file-url"], isTargeted: nil, perform: handleDrop)
+    }
+
+    // MARK: - Project Folder Selector Bar
+    private var projectFolderBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "folder.fill.badge.gearshape")
+                .font(.system(size: 16))
+                .foregroundColor(.accentColor)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("CARTELLA PROGETTI")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(.secondary)
+
+                Text(scanner.currentFolder.isEmpty ? "Nessuna cartella selezionata" : scanner.currentFolder)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(scanner.currentFolder)
+            }
+
+            Spacer(minLength: 8)
+
+            Button(action: selectCustomFolder) {
+                HStack(spacing: 4) {
+                    Image(systemName: "folder.badge.plus")
+                    Text("Sfoglia...")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .help("Seleziona una cartella diversa di progetti")
+
+            Menu {
+                folderQuickOptions
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 20)
+            .help("Opzioni cartella e percorsi recenti")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color(NSColor.controlBackgroundColor).opacity(0.85))
+    }
+
+    @ViewBuilder
+    private var folderQuickOptions: some View {
+        Button("Scegli un'altra cartella...") {
+            selectCustomFolder()
+        }
+
+        if !scanner.currentFolder.isEmpty && FileManager.default.fileExists(atPath: scanner.currentFolder) {
+            Button("Mostra nel Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: scanner.currentFolder)])
+            }
+
+            Button("Copia percorso negli appunti") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(scanner.currentFolder, forType: .string)
+            }
+        }
+
+        if !scanner.recentFolders.isEmpty {
+            Divider()
+            Text("Cartelle Recenti:")
+
+            ForEach(scanner.recentFolders, id: \.self) { folder in
+                Button(action: { scanner.scan(directory: folder) }) {
+                    HStack {
+                        if folder == scanner.currentFolder {
+                            Image(systemName: "checkmark")
+                        }
+                        Text((folder as NSString).lastPathComponent)
+                    }
+                }
+            }
+        }
+
+        Divider()
+        Text("Percorsi Standard:")
+
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let webdevPath = (home as NSString).appendingPathComponent("Documents/Development/WEBDEV")
+        if FileManager.default.fileExists(atPath: webdevPath) {
+            Button("WEBDEV (~/Documents/Development/WEBDEV)") {
+                scanner.scan(directory: webdevPath)
+            }
+        }
+
+        let devPath = (home as NSString).appendingPathComponent("Documents/Development")
+        if FileManager.default.fileExists(atPath: devPath) {
+            Button("Development (~/Documents/Development)") {
+                scanner.scan(directory: devPath)
+            }
+        }
+
+        Button("Home Utente (~)") {
+            scanner.scan(directory: home)
         }
     }
 
@@ -170,14 +277,8 @@ public struct MainWindowView: View {
     private var summaryHeader: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(scanner.currentFolder)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-
                 HStack(spacing: 10) {
-                    Text("\(filteredProjects.count) progetti")
+                    Text("\(filteredProjects.count) progetti trovati")
                         .font(.system(size: 11, weight: .bold))
 
                     let totalBytes = filteredProjects.compactMap { $0.sizeBytes }.reduce(0, +)
@@ -219,17 +320,39 @@ public struct MainWindowView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if filteredProjects.isEmpty {
-                VStack(spacing: 8) {
+                VStack(spacing: 12) {
                     Image(systemName: "folder.badge.questionmark")
-                        .font(.system(size: 36))
+                        .font(.system(size: 38))
                         .foregroundColor(.secondary)
                     Text("Nessun progetto trovato")
-                        .font(.system(size: 14, weight: .semibold))
-                    Text("Modifica i filtri o seleziona una cartella diversa.")
+                        .font(.system(size: 15, weight: .bold))
+                    Text("La cartella corrente non contiene progetti oppure i filtri applicati hanno escluso tutti gli elementi.\n\n\(scanner.currentFolder)")
                         .font(.system(size: 12))
                         .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 340)
+
+                    HStack(spacing: 10) {
+                        Button(action: selectCustomFolder) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "folder.badge.plus")
+                                Text("Scegli Cartella Progetti...")
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+
+                        Button(action: { scanner.scan(directory: scanner.currentFolder) }) {
+                            Image(systemName: "arrow.clockwise")
+                            Text("Ricarica")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.regular)
+                    }
+                    .padding(.top, 6)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(20)
             } else {
                 List(selection: $selectedProject) {
                     ForEach(filteredProjects) { project in
@@ -241,10 +364,12 @@ public struct MainWindowView: View {
                             .contextMenu {
                                 if project.isSymlink {
                                     Button("Ripristina sul Mac") {
+                                        MigrationService.shared.reset()
                                         projectToRestore = project
                                     }
                                 } else {
                                     Button("Sposta su Disco Esterno...") {
+                                        MigrationService.shared.reset()
                                         projectToMigrate = project
                                     }
                                 }
@@ -343,10 +468,30 @@ public struct MainWindowView: View {
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = false
         panel.prompt = "Seleziona Cartella"
+        panel.message = "Seleziona la cartella radice che contiene i tuoi progetti"
+        if !scanner.currentFolder.isEmpty && FileManager.default.fileExists(atPath: scanner.currentFolder) {
+            panel.directoryURL = URL(fileURLWithPath: scanner.currentFolder)
+        }
 
         if panel.runModal() == .OK, let url = panel.url {
             scanner.scan(directory: url.path)
             selectedProject = nil
         }
+    }
+
+    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else { return false }
+        _ = provider.loadObject(ofClass: URL.self) { url, _ in
+            if let folderURL = url {
+                var isDir: ObjCBool = false
+                if FileManager.default.fileExists(atPath: folderURL.path, isDirectory: &isDir), isDir.boolValue {
+                    DispatchQueue.main.async {
+                        self.scanner.scan(directory: folderURL.path)
+                        self.selectedProject = nil
+                    }
+                }
+            }
+        }
+        return true
     }
 }

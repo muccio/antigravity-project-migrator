@@ -6,23 +6,117 @@ public final class FolderScanner: ObservableObject {
     @Published public var projects: [ProjectItem] = []
     @Published public var isScanning: Bool = false
     @Published public var currentFolder: String = ""
+    @Published public var recentFolders: [String] = []
     @Published public var calculationProgress: Double = 0.0
 
     private let fileManager = FileManager.default
     private var calculationQueue = DispatchQueue(label: "com.antigravity.migrator.calc", qos: .userInitiated)
 
-    private init() {}
+    private let savedFolderKey = "AntigravitySavedProjectsFolder"
+    private let recentFoldersKey = "AntigravityRecentProjectsFolders"
+
+    private init() {
+        loadRecentFolders()
+        if let saved = UserDefaults.standard.string(forKey: savedFolderKey),
+           fileManager.fileExists(atPath: saved) {
+            currentFolder = (saved as NSString).standardizingPath
+        }
+    }
+
+    private func loadRecentFolders() {
+        if let recents = UserDefaults.standard.stringArray(forKey: recentFoldersKey) {
+            self.recentFolders = recents.filter { fileManager.fileExists(atPath: $0) }
+        }
+    }
+
+    public func saveRecentFolder(_ folder: String) {
+        let std = (folder as NSString).standardizingPath
+        var recents = self.recentFolders.filter { $0 != std && self.fileManager.fileExists(atPath: $0) }
+        recents.insert(std, at: 0)
+        if recents.count > 6 {
+            recents = Array(recents.prefix(6))
+        }
+        self.recentFolders = recents
+        UserDefaults.standard.set(recents, forKey: recentFoldersKey)
+    }
+
+    /// Determines the best initial directory to scan
+    public func resolveInitialDirectory() -> String {
+        // 1. Saved folder in UserDefaults
+        if let saved = UserDefaults.standard.string(forKey: savedFolderKey),
+           !saved.isEmpty,
+           fileManager.fileExists(atPath: saved) {
+            var isDir: ObjCBool = false
+            if fileManager.fileExists(atPath: saved, isDirectory: &isDir), isDir.boolValue {
+                return (saved as NSString).standardizingPath
+            }
+        }
+
+        // 2. Proximity: If running inside or near a projects directory
+        let bundleURL = Bundle.main.bundleURL.standardized
+        let parentURL = bundleURL.deletingLastPathComponent()
+        let parentPath = parentURL.path
+
+        if parentPath != "/" && parentPath != "/Applications" && !parentPath.hasPrefix("/private") {
+            if containsCandidateProjects(path: parentPath, excluding: bundleURL.lastPathComponent) {
+                return parentPath
+            }
+            let grandParentURL = parentURL.deletingLastPathComponent()
+            let grandParentPath = grandParentURL.path
+            if grandParentPath != "/" && grandParentPath != "/Applications" && !grandParentPath.hasPrefix("/private") {
+                if containsCandidateProjects(path: grandParentPath, excluding: parentURL.lastPathComponent) {
+                    return grandParentPath
+                }
+            }
+        }
+
+        // 3. Common developer locations
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidatePaths = [
+            (home as NSString).appendingPathComponent("Documents/Development/WEBDEV"),
+            (home as NSString).appendingPathComponent("Documents/Development"),
+            (home as NSString).appendingPathComponent("Development"),
+            (home as NSString).appendingPathComponent("Developer"),
+            (home as NSString).appendingPathComponent("Projects"),
+            (home as NSString).appendingPathComponent("Documents/Projects"),
+            (home as NSString).appendingPathComponent("Documents")
+        ]
+
+        for path in candidatePaths {
+            var isDir: ObjCBool = false
+            if fileManager.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue {
+                return path
+            }
+        }
+
+        return home
+    }
+
+    private func containsCandidateProjects(path: String, excluding: String) -> Bool {
+        guard let items = try? fileManager.contentsOfDirectory(atPath: path) else { return false }
+        let subfolders = items.filter { item in
+            if item.hasPrefix(".") || item == excluding { return false }
+            var isDir: ObjCBool = false
+            let full = (path as NSString).appendingPathComponent(item)
+            return fileManager.fileExists(atPath: full, isDirectory: &isDir) && isDir.boolValue
+        }
+        return subfolders.count >= 2
+    }
 
     /// Scans a directory and lists all project candidates
     public func scan(directory: String) {
         let stdDir = (directory as NSString).standardizingPath
         currentFolder = stdDir
+        UserDefaults.standard.set(stdDir, forKey: savedFolderKey)
+        saveRecentFolder(stdDir)
         isScanning = true
         calculationProgress = 0.0
 
         let conversationCounts = AntigravityService.shared.getConversationCounts()
 
-        guard let contents = try? fileManager.contentsOfDirectory(atPath: stdDir) else {
+        var isDir: ObjCBool = false
+        guard fileManager.fileExists(atPath: stdDir, isDirectory: &isDir), isDir.boolValue,
+              let contents = try? fileManager.contentsOfDirectory(atPath: stdDir) else {
             DispatchQueue.main.async {
                 self.projects = []
                 self.isScanning = false

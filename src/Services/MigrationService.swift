@@ -38,6 +38,27 @@ public final class MigrationService: ObservableObject {
 
     private init() {}
 
+    /// Completely resets all state variables so a new migration or restore can start fresh
+    public func reset() {
+        isMonitorCancelled = true
+        currentProcess?.terminate()
+        currentProcess = nil
+        phase = .idle
+        progressMessage = ""
+        logOutput.removeAll()
+        isRunning = false
+        errorDescription = nil
+        isSuccess = false
+        progressFraction = 0.0
+        bytesCopied = 0
+        totalBytesToCopy = 0
+        currentTransferSpeed = ""
+        estimatedTimeRemaining = ""
+        filesCopied = 0
+        totalFilesCount = 0
+        currentFileName = ""
+    }
+
     private func appendLog(_ message: String) {
         DispatchQueue.main.async {
             self.logOutput.append(message)
@@ -55,6 +76,7 @@ public final class MigrationService: ObservableObject {
         ignoreAntigravityRunning: Bool = false,
         completion: @escaping (Bool, String?) -> Void
     ) {
+        reset()
         isRunning = true
         isSuccess = false
         errorDescription = nil
@@ -303,6 +325,7 @@ public final class MigrationService: ObservableObject {
             return
         }
 
+        reset()
         isRunning = true
         isSuccess = false
         errorDescription = nil
