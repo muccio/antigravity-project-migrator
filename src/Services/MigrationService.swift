@@ -282,10 +282,10 @@ public final class MigrationService: ObservableObject {
             try? fileManager.createDirectory(atPath: dest, withIntermediateDirectories: true)
             var src = source
             if !src.hasSuffix("/") { src += "/" }
-            process.arguments = ["-avP", "--protect-args", src, dest]
+            process.arguments = ["-avP", src, dest]
         } else {
             // Source without trailing slash copies the directory itself into destinationParent/
-            process.arguments = ["-avP", "--protect-args", source, dest]
+            process.arguments = ["-avP", source, dest]
         }
 
         let pipe = Pipe()
