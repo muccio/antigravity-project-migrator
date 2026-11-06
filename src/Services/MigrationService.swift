@@ -22,8 +22,19 @@ public final class MigrationService: ObservableObject {
     @Published public var errorDescription: String? = nil
     @Published public var isSuccess: Bool = false
 
+    // Global Progress Tracking
+    @Published public var progressFraction: Double = 0.0
+    @Published public var bytesCopied: Int64 = 0
+    @Published public var totalBytesToCopy: Int64 = 0
+    @Published public var currentTransferSpeed: String = ""
+    @Published public var estimatedTimeRemaining: String = ""
+    @Published public var filesCopied: Int = 0
+    @Published public var totalFilesCount: Int = 0
+    @Published public var currentFileName: String = ""
+
     private let fileManager = FileManager.default
     private var currentProcess: Process?
+    private var isMonitorCancelled: Bool = false
 
     private init() {}
 
@@ -104,17 +115,87 @@ public final class MigrationService: ObservableObject {
                     self.appendLog("✅ Cache rimosse con successo.")
                 }
 
+                // Measure actual source size before copying
+                let actualSourceSize = FolderSizeService.shared.calculateSize(atPath: project.path)
+
                 // 4. Rsync to external drive
-                DispatchQueue.main.async { self.phase = .copying }
+                DispatchQueue.main.async {
+                    self.phase = .copying
+                    self.totalBytesToCopy = actualSourceSize
+                    self.bytesCopied = 0
+                    self.progressFraction = 0.05
+                    self.currentTransferSpeed = ""
+                    self.estimatedTimeRemaining = "Calcolo in corso..."
+                    self.filesCopied = 0
+                    self.totalFilesCount = 0
+                    self.currentFileName = ""
+                }
                 self.appendLog("📦 Avvio trasferimento rsync...")
                 self.appendLog("   Sorgente: \(project.path)")
                 self.appendLog("   Destinazione: \(destParent)/")
 
+                self.isMonitorCancelled = false
+                let monitorQueue = DispatchQueue(label: "com.antigravity.migrator.progress", qos: .utility)
+                monitorQueue.async {
+                    var lastBytes: Int64 = 0
+                    var lastTime = Date()
+
+                    while !self.isMonitorCancelled {
+                        Thread.sleep(forTimeInterval: 0.7)
+                        if self.isMonitorCancelled { break }
+
+                        let currentSize = FolderSizeService.shared.calculateSize(atPath: targetProjectPath)
+                        let now = Date()
+                        let elapsed = now.timeIntervalSince(lastTime)
+
+                        var speedStr = ""
+                        var etaStr = ""
+
+                        if elapsed >= 0.5 {
+                            let bytesDiff = currentSize - lastBytes
+                            if bytesDiff > 0 {
+                                let bytesPerSec = Double(bytesDiff) / elapsed
+                                speedStr = ByteCountFormatter.string(fromByteCount: Int64(bytesPerSec), countStyle: .file) + "/s"
+
+                                if actualSourceSize > currentSize {
+                                    let remainingBytes = actualSourceSize - currentSize
+                                    let remainingSec = Int(Double(remainingBytes) / bytesPerSec)
+                                    if remainingSec < 60 {
+                                        etaStr = "\(max(1, remainingSec))s rimanenti"
+                                    } else if remainingSec < 3600 {
+                                        etaStr = "\(remainingSec / 60)m \(remainingSec % 60)s rimanenti"
+                                    } else {
+                                        etaStr = "\(remainingSec / 3600)h \((remainingSec % 3600) / 60)m rimanenti"
+                                    }
+                                } else {
+                                    etaStr = "Completamento..."
+                                }
+                            }
+                            lastBytes = currentSize
+                            lastTime = now
+                        }
+
+                        let fraction = actualSourceSize > 0 ? min(0.92, max(0.05, 0.05 + 0.87 * (Double(currentSize) / Double(actualSourceSize)))) : 0.5
+
+                        DispatchQueue.main.async {
+                            self.bytesCopied = currentSize
+                            self.progressFraction = fraction
+                            if !speedStr.isEmpty { self.currentTransferSpeed = speedStr }
+                            if !etaStr.isEmpty { self.estimatedTimeRemaining = etaStr }
+                        }
+                    }
+                }
+
                 try self.runRsync(source: project.path, destinationParent: destParent)
+                self.isMonitorCancelled = true
                 self.appendLog("✅ Copia rsync terminata con successo.")
 
                 // 5. Verification of copied files
-                DispatchQueue.main.async { self.phase = .verifyingCopy }
+                DispatchQueue.main.async {
+                    self.phase = .verifyingCopy
+                    self.progressFraction = 0.95
+                    self.estimatedTimeRemaining = "Verifica integrità..."
+                }
                 self.appendLog("🔍 Verifica integrità della cartella su disco esterno...")
                 guard self.fileManager.fileExists(atPath: targetProjectPath) else {
                     throw NSError(domain: "Migration", code: 5, userInfo: [
@@ -132,7 +213,11 @@ public final class MigrationService: ObservableObject {
                 self.appendLog("✅ Verifica superata: \(targetContents.count) elementi principali presenti.")
 
                 // 6. Atomic swap: Rename original to backup, create symlink, then delete backup
-                DispatchQueue.main.async { self.phase = .creatingSymlink }
+                DispatchQueue.main.async {
+                    self.phase = .creatingSymlink
+                    self.progressFraction = 0.98
+                    self.estimatedTimeRemaining = "Creazione link..."
+                }
                 self.appendLog("🔗 Creazione collegamento simbolico...")
 
                 let backupOriginalPath = project.path + ".__migrating_backup__"
@@ -185,11 +270,16 @@ public final class MigrationService: ObservableObject {
                     self.phase = .completed
                     self.isRunning = false
                     self.isSuccess = true
+                    self.progressFraction = 1.0
+                    self.bytesCopied = actualSourceSize
+                    self.estimatedTimeRemaining = "Completato"
+                    self.currentTransferSpeed = ""
                     self.appendLog("🎉 Operazione completata! Il progetto risiede ora sul disco esterno con symlink trasparente.")
                     completion(true, nil)
                 }
 
             } catch {
+                self.isMonitorCancelled = true
                 DispatchQueue.main.async {
                     self.phase = .failed
                     self.isRunning = false
@@ -299,15 +389,37 @@ public final class MigrationService: ObservableObject {
                 let lines = str.components(separatedBy: "\r")
                 for line in lines {
                     let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmed.isEmpty {
-                        // Filter frequent rsync lines or capture progress
-                        if trimmed.contains("%") || trimmed.contains("to-check=") || trimmed.hasPrefix("sending") {
-                            DispatchQueue.main.async {
-                                self.progressMessage = trimmed
+                    guard !trimmed.isEmpty else { continue }
+
+                    // Progress stats line
+                    if trimmed.contains("%") || trimmed.contains("to-check=") || trimmed.hasPrefix("Transfer starting") {
+                        DispatchQueue.main.async {
+                            self.progressMessage = trimmed
+
+                            // Parse files transferred: xfer#12
+                            if let xferRange = trimmed.range(of: #"xfer#\d+"#, options: .regularExpression) {
+                                let numStr = String(trimmed[xferRange]).replacingOccurrences(of: "xfer#", with: "")
+                                if let n = Int(numStr) { self.filesCopied = n }
                             }
-                        } else {
-                            self.appendLog("   \(trimmed)")
+
+                            // Parse total files: to-check=45/120
+                            if let checkRange = trimmed.range(of: #"to-check=\d+/\d+"#, options: .regularExpression) {
+                                let parts = String(trimmed[checkRange]).components(separatedBy: "/")
+                                if parts.count > 1, let tot = Int(parts[1]) {
+                                    self.totalFilesCount = tot
+                                }
+                            }
+
+                            // Parse speed: e.g. 245.50MB/s
+                            if let speedRange = trimmed.range(of: #"\d+\.?\d*\s*[kMG]B/s"#, options: .regularExpression) {
+                                self.currentTransferSpeed = String(trimmed[speedRange])
+                            }
                         }
+                    } else if !trimmed.hasPrefix("sent ") && !trimmed.hasPrefix("total size ") && !trimmed.hasPrefix("building file list") {
+                        DispatchQueue.main.async {
+                            self.currentFileName = (trimmed as NSString).lastPathComponent
+                        }
+                        self.appendLog("   \(trimmed)")
                     }
                 }
             }
@@ -327,6 +439,7 @@ public final class MigrationService: ObservableObject {
     }
 
     public func cancel() {
+        isMonitorCancelled = true
         currentProcess?.terminate()
         currentProcess = nil
         isRunning = false

@@ -173,12 +173,64 @@ public struct RestoreModalView: View {
 
     private var progressViewSection: some View {
         VStack(alignment: .leading, spacing: 14) {
+            // Global Progress Card
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("AVANZAMENTO RIPRISTINO")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.secondary)
+
+                    Spacer()
+
+                    let percent = Int(migration.progressFraction * 100)
+                    Text("\(percent)%")
+                        .font(.system(size: 18, weight: .heavy, design: .rounded))
+                        .foregroundColor(.blue)
+                }
+
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.gray.opacity(0.2))
+                            .frame(height: 12)
+
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(
+                                LinearGradient(
+                                    gradient: Gradient(colors: migration.isSuccess ? [.green, .mint] : [.blue, .cyan]),
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .frame(width: max(0, min(geo.size.width, geo.size.width * CGFloat(migration.progressFraction))), height: 12)
+                            .animation(.linear(duration: 0.3), value: migration.progressFraction)
+                    }
+                }
+                .frame(height: 12)
+
+                HStack {
+                    Text("\(ByteCountFormatter.string(fromByteCount: migration.bytesCopied, countStyle: .file)) di \(ByteCountFormatter.string(fromByteCount: migration.totalBytesToCopy, countStyle: .file))")
+                        .font(.system(size: 12, weight: .semibold))
+
+                    Spacer()
+
+                    if !migration.estimatedTimeRemaining.isEmpty {
+                        Text(migration.estimatedTimeRemaining)
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            .padding(14)
+            .background(Color(NSColor.controlBackgroundColor))
+            .cornerRadius(10)
+
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 3) {
                         ForEach(Array(migration.logOutput.enumerated()), id: \.offset) { index, line in
                             Text(line)
-                                .font(.system(size: 11, design: .monospaced))
+                                .font(.system(size: 10, design: .monospaced))
                                 .foregroundColor(line.contains("❌") ? .red : (line.contains("✅") ? .green : .secondary))
                                 .id(index)
                         }
@@ -186,7 +238,7 @@ public struct RestoreModalView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
                 }
-                .frame(height: 220)
+                .frame(height: 180)
                 .background(Color.black.opacity(0.85))
                 .cornerRadius(8)
             }

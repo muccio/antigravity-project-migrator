@@ -306,7 +306,7 @@ public struct MigrationModalView: View {
 
     // MARK: - Progress / Log Section
     private var progressViewSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             // Status Banner
             HStack(spacing: 12) {
                 ZStack {
@@ -325,12 +325,124 @@ public struct MigrationModalView: View {
                     Text(migration.progressMessage)
                         .font(.system(size: 12))
                         .foregroundColor(.secondary)
+                        .lineLimit(1)
                 }
             }
-            .padding(14)
+            .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(statusBannerColor.opacity(0.1))
             .cornerRadius(10)
+
+            // GLOBAL PROJECT PROGRESS CARD
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("AVANZAMENTO GLOBALE MIGRAZIONE")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.secondary)
+
+                    Spacer()
+
+                    let percent = Int(migration.progressFraction * 100)
+                    Text("\(percent)%")
+                        .font(.system(size: 18, weight: .heavy, design: .rounded))
+                        .foregroundColor(statusBannerColor)
+                }
+
+                // Global Progress Bar
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.gray.opacity(0.2))
+                            .frame(height: 12)
+
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(
+                                LinearGradient(
+                                    gradient: Gradient(colors: migration.isSuccess ? [.green, .mint] : [.blue, .purple]),
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .frame(width: max(0, min(geo.size.width, geo.size.width * CGFloat(migration.progressFraction))), height: 12)
+                            .animation(.linear(duration: 0.3), value: migration.progressFraction)
+                    }
+                }
+                .frame(height: 12)
+
+                // Transferred Bytes vs Total
+                HStack {
+                    Text("\(ByteCountFormatter.string(fromByteCount: migration.bytesCopied, countStyle: .file)) di \(ByteCountFormatter.string(fromByteCount: migration.totalBytesToCopy, countStyle: .file))")
+                        .font(.system(size: 12, weight: .semibold))
+
+                    Spacer()
+
+                    if !migration.estimatedTimeRemaining.isEmpty {
+                        HStack(spacing: 4) {
+                            Image(systemName: "hourglass")
+                                .font(.system(size: 11))
+                            Text(migration.estimatedTimeRemaining)
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .foregroundColor(.secondary)
+                    }
+                }
+
+                Divider()
+                    .padding(.vertical, 2)
+
+                // Metric Pills: Speed, Remaining, Files
+                HStack(spacing: 8) {
+                    // Speed
+                    HStack(spacing: 4) {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(.yellow)
+                        Text(migration.currentTransferSpeed.isEmpty ? "-- MB/s" : migration.currentTransferSpeed)
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color(NSColor.windowBackgroundColor))
+                    .cornerRadius(6)
+
+                    // Files count
+                    HStack(spacing: 4) {
+                        Image(systemName: "doc.on.doc.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(.blue)
+                        Text("\(migration.filesCopied) / \(migration.totalFilesCount > 0 ? "\(migration.totalFilesCount)" : "...") file")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color(NSColor.windowBackgroundColor))
+                    .cornerRadius(6)
+
+                    Spacer()
+                }
+
+                // Current file being processed
+                if !migration.currentFileName.isEmpty {
+                    HStack(spacing: 4) {
+                        Image(systemName: "doc.text")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                        Text("Copia: \(migration.currentFileName)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .padding(.top, 2)
+                }
+            }
+            .padding(14)
+            .background(Color(NSColor.controlBackgroundColor))
+            .cornerRadius(10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.gray.opacity(0.15), lineWidth: 1)
+            )
 
             // Log Console
             VStack(alignment: .leading, spacing: 6) {
@@ -343,7 +455,7 @@ public struct MigrationModalView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             ForEach(Array(migration.logOutput.enumerated()), id: \.offset) { index, line in
                                 Text(line)
-                                    .font(.system(size: 11, design: .monospaced))
+                                    .font(.system(size: 10, design: .monospaced))
                                     .foregroundColor(line.contains("❌") ? .red : (line.contains("✅") ? .green : .secondary))
                                     .id(index)
                             }
@@ -351,7 +463,7 @@ public struct MigrationModalView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(10)
                     }
-                    .frame(height: 260)
+                    .frame(height: 160)
                     .background(Color.black.opacity(0.85))
                     .cornerRadius(8)
                     .onChange(of: migration.logOutput.count) { _ in
