@@ -1,0 +1,422 @@
+import AppKit
+import SwiftUI
+
+public struct MigrationModalView: View {
+    public let project: ProjectItem
+    public let onDismiss: () -> Void
+
+    @StateObject private var migration = MigrationService.shared
+    @State private var volumes: [ExternalVolume] = []
+    @State private var selectedVolume: ExternalVolume? = nil
+    @State private var targetSubfolder: String = "AntigravityProjects"
+    @State private var customParentPath: String = ""
+    @State private var createBackup: Bool = true
+    @State private var pruneCaches: Bool = true
+    @State private var cachesToPrune: [CacheFolderItem] = []
+    @State private var isAntigravityRunning: Bool = false
+    @State private var ignoreAntigravityWarning: Bool = false
+    @State private var isCheckingProcesses: Bool = false
+
+    public var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Migrazione Progetto su Disco Esterno")
+                        .font(.system(size: 16, weight: .bold))
+                    Text(project.name)
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                if !migration.isRunning {
+                    Button("Chiudi") {
+                        onDismiss()
+                    }
+                    .keyboardShortcut(.cancelAction)
+                }
+            }
+            .padding(16)
+            .background(Color(NSColor.windowBackgroundColor))
+
+            Divider()
+
+            // Content
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    if migration.isRunning || migration.isSuccess || migration.errorDescription != nil {
+                        progressViewSection
+                    } else {
+                        configurationSection
+                    }
+                }
+                .padding(20)
+            }
+
+            Divider()
+
+            // Footer
+            HStack {
+                if migration.isRunning {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                    Text(migration.progressMessage)
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                    Button("Annulla") {
+                        migration.cancel()
+                    }
+                } else if migration.isSuccess {
+                    Spacer()
+                    Button("Fatto") {
+                        onDismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.green)
+                } else {
+                    Button("Annulla") {
+                        onDismiss()
+                    }
+
+                    Spacer()
+
+                    Button(action: startMigration) {
+                        HStack {
+                            Image(systemName: "arrow.right.circle.fill")
+                            Text("Avvia Spostamento Sicuro")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.accentColor)
+                    .disabled(selectedVolume == nil || (isAntigravityRunning && !ignoreAntigravityWarning))
+                }
+            }
+            .padding(16)
+            .background(Color(NSColor.windowBackgroundColor))
+        }
+        .frame(width: 650, height: 600)
+        .onAppear {
+            loadInitialData()
+        }
+    }
+
+    // MARK: - Configuration Section
+    private var configurationSection: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            // Step 1: Destination Volume
+            VStack(alignment: .leading, spacing: 8) {
+                Text("1. SELEZIONA DISCO ESTERNO DI DESTINAZIONE")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.secondary)
+
+                if volumes.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "externaldrive.badge.xmark")
+                            .font(.system(size: 32))
+                            .foregroundColor(.secondary)
+                        Text("Nessuna unità esterna rilevata")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Collega un disco rigido esterno, un SSD o una scheda SD per procedere.")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                        Button("Aggiorna Dischi") {
+                            loadVolumes()
+                        }
+                        .padding(.top, 4)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(24)
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .cornerRadius(8)
+                } else {
+                    VStack(spacing: 8) {
+                        ForEach(volumes) { vol in
+                            VolumeCard(volume: vol, isSelected: selectedVolume?.id == vol.id) {
+                                selectedVolume = vol
+                            }
+                        }
+                    }
+                }
+
+                if let vol = selectedVolume {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Sottocartella archivio sul disco:")
+                            .font(.system(size: 11, weight: .medium))
+                        HStack {
+                            Text(vol.url.path + "/")
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundColor(.secondary)
+                            TextField("Nome cartella", text: $targetSubfolder)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                    }
+                    .padding(.top, 6)
+                }
+            }
+
+            // Step 2: Safety Pre-flight Checks
+            VStack(alignment: .leading, spacing: 8) {
+                Text("2. CONTROLLI DI SICUREZZA PRE-VOLO")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.secondary)
+
+                VStack(spacing: 8) {
+                    // Antigravity running check
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Image(systemName: isAntigravityRunning ? "exclamationmark.octagon.fill" : "checkmark.circle.fill")
+                                .foregroundColor(isAntigravityRunning ? .red : .green)
+                                .font(.system(size: 16))
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(isAntigravityRunning ? "Antigravity è aperto!" : "Antigravity non è in esecuzione")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(isAntigravityRunning ? .red : .primary)
+                                Text(isAntigravityRunning ? "Per non corrompere l'indice chat o bloccare i file aperti, devi chiudere l'app." : "Stato ideale per lo spostamento dei file.")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                            }
+
+                            Spacer()
+
+                            if isAntigravityRunning {
+                                HStack(spacing: 8) {
+                                    Button("Chiudi Antigravity") {
+                                        closeAntigravity()
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .tint(.red)
+
+                                    Button(action: checkProcessStatus) {
+                                        Image(systemName: "arrow.clockwise")
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Ricarica stato processi")
+                                }
+                            } else {
+                                Button(action: checkProcessStatus) {
+                                    Image(systemName: "arrow.clockwise")
+                                }
+                                .buttonStyle(.plain)
+                                .help("Ricarica stato processi")
+                            }
+                        }
+
+                        if isAntigravityRunning {
+                            Toggle("Procedi comunque (ignora controllo Antigravity)", isOn: $ignoreAntigravityWarning)
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                                .padding(.top, 2)
+                        }
+                    }
+                    .padding(10)
+                    .background(isAntigravityRunning ? Color.red.opacity(0.1) : Color(NSColor.controlBackgroundColor))
+                    .cornerRadius(8)
+
+                    // Target Filesystem Check
+                    if let vol = selectedVolume {
+                        HStack {
+                            Image(systemName: vol.isAPFS ? "checkmark.circle.fill" : (vol.isExFAT ? "exclamationmark.triangle.fill" : "info.circle.fill"))
+                                .foregroundColor(vol.isAPFS ? .green : (vol.isExFAT ? .yellow : .blue))
+                                .font(.system(size: 16))
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Formato Filesystem: \(vol.fileSystemFormat)")
+                                    .font(.system(size: 12, weight: .semibold))
+                                Text(vol.isAPFS ? "Formato APFS nativo: massimo supporto per link simbolici e metadati Git." : (vol.isExFAT ? "Attenzione: ExFAT non gestisce i permessi POSIX e symlink di build complessi." : "Compatibile con macOS."))
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                            }
+
+                            Spacer()
+                        }
+                        .padding(10)
+                        .background(Color(NSColor.controlBackgroundColor))
+                        .cornerRadius(8)
+                    }
+                }
+            }
+
+            // Step 3: Options (Backup & Pruning)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("3. OPZIONI DI OTTIMIZZAZIONE E BACKUP")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.secondary)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle(isOn: $createBackup) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Esegui backup di sicurezza delle chat prima di procedere")
+                                .font(.system(size: 12, weight: .medium))
+                            Text("Salva una copia istantanea di conversation_summaries.db e state.vscdb in ~/.gemini/antigravity_backups")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    if !cachesToPrune.isEmpty {
+                        Divider()
+
+                        Toggle(isOn: $pruneCaches) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Elimina cache ricreabili prima del trasferimento (Consigliato)")
+                                    .font(.system(size: 12, weight: .medium))
+                                Text("node_modules e cartelle build contengono centinaia di migliaia di micro-file. Eliminarli riduce il tempo di copia da ore a pochi secondi.")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
+                        if pruneCaches {
+                            VStack(spacing: 4) {
+                                ForEach($cachesToPrune) { $cache in
+                                    HStack {
+                                        Toggle("", isOn: $cache.isSelectedForCleaning)
+                                            .labelsHidden()
+                                        Image(systemName: "folder")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(.orange)
+                                        Text(cache.name)
+                                            .font(.system(size: 11))
+                                        Spacer()
+                                        Text(cache.formattedSize)
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(Color(NSColor.windowBackgroundColor))
+                                    .cornerRadius(6)
+                                }
+                            }
+                            .padding(.leading, 24)
+                        }
+                    }
+                }
+                .padding(12)
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(8)
+            }
+        }
+    }
+
+    // MARK: - Progress / Log Section
+    private var progressViewSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Status Banner
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(statusBannerColor.opacity(0.2))
+                        .frame(width: 44, height: 44)
+
+                    Image(systemName: statusBannerIcon)
+                        .font(.system(size: 22))
+                        .foregroundColor(statusBannerColor)
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(migration.phase.rawValue)
+                        .font(.system(size: 15, weight: .bold))
+                    Text(migration.progressMessage)
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(statusBannerColor.opacity(0.1))
+            .cornerRadius(10)
+
+            // Log Console
+            VStack(alignment: .leading, spacing: 6) {
+                Text("LOG OPERAZIONI")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.secondary)
+
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 3) {
+                            ForEach(Array(migration.logOutput.enumerated()), id: \.offset) { index, line in
+                                Text(line)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(line.contains("❌") ? .red : (line.contains("✅") ? .green : .secondary))
+                                    .id(index)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                    }
+                    .frame(height: 260)
+                    .background(Color.black.opacity(0.85))
+                    .cornerRadius(8)
+                    .onChange(of: migration.logOutput.count) { _ in
+                        if let last = migration.logOutput.indices.last {
+                            proxy.scrollTo(last, anchor: .bottom)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var statusBannerColor: Color {
+        if migration.isSuccess { return .green }
+        if migration.errorDescription != nil { return .red }
+        return .accentColor
+    }
+
+    private var statusBannerIcon: String {
+        if migration.isSuccess { return "checkmark.circle.fill" }
+        if migration.errorDescription != nil { return "xmark.circle.fill" }
+        return "arrow.triangle.2.circlepath"
+    }
+
+    // MARK: - Actions
+    private func loadInitialData() {
+        loadVolumes()
+        checkProcessStatus()
+        cachesToPrune = project.cacheItems
+    }
+
+    private func loadVolumes() {
+        volumes = VolumeService.shared.getMountedVolumes()
+        if selectedVolume == nil {
+            selectedVolume = volumes.first
+        }
+    }
+
+    private func checkProcessStatus() {
+        isAntigravityRunning = ProcessService.shared.isAntigravityRunning()
+    }
+
+    private func closeAntigravity() {
+        _ = ProcessService.shared.terminateAntigravity()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            self.checkProcessStatus()
+        }
+    }
+
+    private func startMigration() {
+        guard let vol = selectedVolume else { return }
+        let destParent = (vol.url.path as NSString).appendingPathComponent(targetSubfolder)
+        try? FileManager.default.createDirectory(atPath: destParent, withIntermediateDirectories: true)
+
+        migration.migrateProject(
+            project: project,
+            destinationParentFolder: destParent,
+            pruneCaches: pruneCaches,
+            cachesToPrune: cachesToPrune,
+            createBackup: createBackup,
+            ignoreAntigravityRunning: ignoreAntigravityWarning
+        ) { success, _ in
+            if success {
+                FolderScanner.shared.refreshProject(atPath: project.path)
+            }
+        }
+    }
+}
